@@ -12,12 +12,13 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
-        maven(url = "https://jitpack.io")
     }
 }
 
 rootProject.name = "DataStoreRoom"
 
 include(
-    ":app",
+    ":sample",
+    ":annotations",
+    ":processor",
 )
