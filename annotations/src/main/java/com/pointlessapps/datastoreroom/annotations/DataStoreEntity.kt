@@ -42,7 +42,17 @@ package com.pointlessapps.datastoreroom.annotations
  * )
  * val dataStoreEntity = DataStoreEntity()
  * ```
+ *
+ * If you want to encrypt the data before saving it, you can use [encrypt] argument.
+ * If you set it to true you'd have to populate the [encryptionKey] argument as well.
+ * The data will be automatically serialized as Base64 string before saving. To accomplish that
+ * [TypeConverter]s will be used
+ * (or [com.pointlessapps.datastoreroom.converters.GsonDataStoreTypeConverter] if none provided)
  */
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.SOURCE)
-annotation class DataStoreEntity(val name: String = "")
+annotation class DataStoreEntity(
+    val name: String = "",
+    val encrypt: Boolean = false,
+    val encryptionKey: String = "",
+)

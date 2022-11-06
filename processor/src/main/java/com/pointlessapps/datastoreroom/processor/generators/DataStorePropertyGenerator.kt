@@ -3,44 +3,74 @@ package com.pointlessapps.datastoreroom.processor.generators
 import com.google.devtools.ksp.symbol.KSPropertyDeclaration
 import com.google.devtools.ksp.symbol.KSType
 import com.pointlessapps.datastoreroom.annotations.TypeConverter
-import com.pointlessapps.datastoreroom.converters.DataStoreTypeConverter
+import com.pointlessapps.datastoreroom.converters.GsonDataStoreTypeConverter
 import com.pointlessapps.datastoreroom.processor.*
-import com.pointlessapps.datastoreroom.processor.getDataStorePropertyName
-import com.pointlessapps.datastoreroom.processor.isTypeOf
-import com.pointlessapps.datastoreroom.processor.startWithUppercase
-import com.pointlessapps.datastoreroom.processor.toSnakeCase
 import com.squareup.kotlinpoet.*
-import com.squareup.kotlinpoet.MemberName.Companion.member
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.toTypeName
 
-internal class DataStorePropertyGenerator(private val file: FileSpec.Builder) {
+internal class DataStorePropertyGenerator(
+    private val file: FileSpec.Builder,
+    encryptionKey: String?,
+) {
+
+    private val hasEncryption = encryptionKey != null
+
+    init {
+        if (hasEncryption) {
+            file.addImport("com.pointlessapps.datastoreroom.processor", "encrypt", "decrypt")
+            file.addProperty(
+                PropertySpec.builder("encryptionKey", STRING)
+                    .addModifiers(KModifier.PRIVATE, KModifier.CONST)
+                    .initializer("%S", encryptionKey)
+                    .build()
+            )
+        }
+    }
 
     @Suppress("UNCHECKED_CAST")
     fun generateTypeConverters(properties: Sequence<KSPropertyDeclaration>): List<PropertySpec> {
-        val converters = properties.mapNotNull { property ->
-            property.annotations.find {
-                it.isTypeOf<TypeConverter>()
-            }?.let {
-                property to it
-            }
-        }.mapNotNull { (property, annotation) ->
-            (annotation.arguments.find {
-                it.name?.asString() == "converter"
-            }?.value as? KSType)?.let {
-                property to it
-            }
+        val converters = mutableMapOf<KSPropertyDeclaration, TypeName>()
+        converters.putAll(
+            properties.mapNotNull { property ->
+                property.annotations.find {
+                    it.isTypeOf<TypeConverter>()
+                }?.let {
+                    property to it
+                }
+            }.mapNotNull { (property, annotation) ->
+                (annotation.arguments.find {
+                    it.name?.asString() == "converter"
+                }?.value as? KSType)?.let {
+                    property to it
+                }
+            }.map { (property, converter) ->
+                property to if (converter.declaration.typeParameters.isEmpty()) {
+                    converter.toClassName()
+                } else {
+                    converter.toClassName().parameterizedBy(property.type.toTypeName())
+                }
+            },
+        )
+
+        if (hasEncryption) {
+            converters.putAll(
+                properties.mapNotNull { property ->
+                    if (property.annotations.none { it.isTypeOf<TypeConverter>() }) {
+                        property to GsonDataStoreTypeConverter::class.asClassName().parameterizedBy(
+                            property.type.toTypeName(),
+                        )
+                    } else {
+                        null
+                    }
+                },
+            )
         }
 
-        return converters.map { (property, converter) ->
-            val type = if (converter.declaration.typeParameters.isEmpty()) {
-                converter.toClassName()
-            } else {
-                converter.toClassName().parameterizedBy(property.type.toTypeName())
-            }
-
-            PropertySpec.builder("${property.simpleName.getShortName()}Converter", type)
+        return converters.map { (property, type) ->
+            val shortName = getDataStorePropertyName(property)
+            PropertySpec.builder("${shortName}Converter", type)
                 .initializer("%T()", type)
                 .build()
         }.toList()
@@ -65,7 +95,7 @@ internal class DataStorePropertyGenerator(private val file: FileSpec.Builder) {
         return properties.map { property ->
             val shortName = getDataStorePropertyName(property)
             val shouldBeConverted = shouldDataStorePropertyBeConverted(property)
-            val getter = if (shouldBeConverted) {
+            val getter = if (shouldBeConverted || hasEncryption) {
                 generateConverterGetter(property)
             } else {
                 generateGetter(property)
@@ -97,7 +127,7 @@ internal class DataStorePropertyGenerator(private val file: FileSpec.Builder) {
         return properties.map { property ->
             val shortName = getDataStorePropertyName(property)
             val shouldBeConverted = shouldDataStorePropertyBeConverted(property)
-            val setter = if (shouldBeConverted) {
+            val setter = if (shouldBeConverted || hasEncryption) {
                 generateConverterSetter(property)
             } else {
                 generateSetter(property)
@@ -160,7 +190,8 @@ internal class DataStorePropertyGenerator(private val file: FileSpec.Builder) {
     private fun generateConverterGetter(property: KSPropertyDeclaration): String {
         val shortName = getDataStorePropertyName(property)
         val converterName = "${shortName}Converter"
-        return "it[KEY_${shortName.toSnakeCase()}]?.let { value -> $converterName.fromString(value) }"
+        val decryption = generateDecryption()
+        return "it[KEY_${shortName.toSnakeCase()}]?.let { value -> $converterName.fromString(value$decryption) }"
     }
 
     private fun generateGetter(property: KSPropertyDeclaration): String {
@@ -171,7 +202,8 @@ internal class DataStorePropertyGenerator(private val file: FileSpec.Builder) {
     private fun generateConverterSetter(property: KSPropertyDeclaration): String {
         val shortName = getDataStorePropertyName(property)
         val converterName = "${shortName}Converter"
-        return "it[KEY_${shortName.toSnakeCase()}] = $converterName.toString($shortName)"
+        val encryption = generateEncryption()
+        return "it[KEY_${shortName.toSnakeCase()}] = $converterName.toString($shortName)$encryption"
     }
 
     private fun generateSetter(property: KSPropertyDeclaration): String {
@@ -179,7 +211,14 @@ internal class DataStorePropertyGenerator(private val file: FileSpec.Builder) {
         return "it[KEY_${shortName.toSnakeCase()}] = $shortName"
     }
 
+    private fun generateDecryption() = if (hasEncryption) ".decrypt(encryptionKey)" else ""
+    private fun generateEncryption() = if (hasEncryption) ".encrypt(encryptionKey)" else ""
+
     private fun getPropertyTypeName(property: KSPropertyDeclaration): TypeName {
+        if (hasEncryption) {
+            return STRING
+        }
+
         val typeName = property.type.toTypeName()
 
         if (typeName in AVAILABLE_TYPES) {

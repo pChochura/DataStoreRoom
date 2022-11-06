@@ -4,6 +4,7 @@ import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.validate
+import com.pointlessapps.datastoreroom.annotations.DataStoreEntity
 import com.pointlessapps.datastoreroom.processor.getDataStoreEntityName
 import com.pointlessapps.datastoreroom.processor.isTypeOf
 import com.squareup.kotlinpoet.*
@@ -37,8 +38,17 @@ internal class DataStoreEntityGenerator(private val codeGenerator: CodeGenerator
             property.annotations.none { it.isTypeOf<Transient>() } && property.validate()
         }
 
+        val encryptionKey = classDeclaration.annotations.find {
+            it.isTypeOf<DataStoreEntity>()
+        }?.arguments?.let { args ->
+            args.find { it.name?.asString() == "encrypt" }?.value as? Boolean to
+                    args.find { it.name?.asString() == "encryptionKey" }?.value as? String
+        }?.takeIf { (hasEncryption, key) ->
+            hasEncryption == true && !key.isNullOrEmpty()
+        }?.second
+
         if (properties.iterator().hasNext()) {
-            val propertyGenerator = DataStorePropertyGenerator(file)
+            val propertyGenerator = DataStorePropertyGenerator(file, encryptionKey)
 
             mainClass.addProperties(propertyGenerator.generateTypeConverters(properties))
             mainClass.addType(propertyGenerator.generateCompanionObject(properties))
